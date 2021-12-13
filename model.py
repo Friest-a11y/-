@@ -147,4 +147,91 @@ def data_preprocess(DATA_PATH):
 
     return data, train_label
 
+# ==========
+# gsdj's part
+# ==========
 
+### count编码
+def count_coding(df, fea_col):
+    for f in fea_col:
+        df[f + '_count'] = df[f].map(df[f].value_counts())
+    return (df)
+
+
+# 定义交叉特征统计
+def cross_cat_num(df, num_col, cat_col):
+    for f1 in tqdm(cat_col):
+        g = df.groupby(f1, as_index=False)
+        for f2 in tqdm(num_col):
+            feat = g[f2].agg({
+                '{}_{}_max'.format(f1, f2): 'max', '{}_{}_min'.format(f1, f2): 'min',
+                '{}_{}_median'.format(f1, f2): 'median',
+            })
+            df = df.merge(feat, on=f1, how='left')
+    return (df)
+
+
+def cross_qua_cat_num(df):
+    for f_pair in tqdm([
+        ['subGrade', 'regionCode'], ['grade', 'regionCode'], ['subGrade', 'postCode'], ['grade', 'postCode'], ['employmentTitle','title'],
+        ['regionCode','title'], ['postCode','title'], ['homeOwnership','title'], ['homeOwnership','employmentTitle'],['homeOwnership','employmentLength'],
+        ['regionCode', 'postCode']
+    ]):
+        # 共现次数
+        df['_'.join(f_pair) + '_count'] = df.groupby(f_pair)['id'].transform('count')
+        # n unique、熵
+        df = df.merge(df.groupby(f_pair[0], as_index=False)[f_pair[1]].agg({
+            '{}_{}_nunique'.format(f_pair[0], f_pair[1]): 'nunique',
+            '{}_{}_ent'.format(f_pair[0], f_pair[1]): lambda x: entropy(x.value_counts() / x.shape[0])
+        }), on=f_pair[0], how='left')
+        df = df.merge(df.groupby(f_pair[1], as_index=False)[f_pair[0]].agg({
+            '{}_{}_nunique'.format(f_pair[1], f_pair[0]): 'nunique',
+            '{}_{}_ent'.format(f_pair[1], f_pair[0]): lambda x: entropy(x.value_counts() / x.shape[0])
+        }), on=f_pair[1], how='left')
+        # 比例偏好
+        df['{}_in_{}_prop'.format(f_pair[0], f_pair[1])] = df['_'.join(f_pair) + '_count'] / df[f_pair[1] + '_count']
+        df['{}_in_{}_prop'.format(f_pair[1], f_pair[0])] = df['_'.join(f_pair) + '_count'] / df[f_pair[0] + '_count']
+    return (df)
+
+
+# count编码
+def count_coding(df, fea_col):
+    for f in fea_col:
+        df[f + '_count'] = df[f].map(df[f].value_counts())
+    return (df)
+
+def gen_basicFea(data):
+    data['avg_income'] = data['annualIncome'] / data['employmentLength']
+    data['total_income'] = data['annualIncome'] * data['employmentLength']
+    data['avg_loanAmnt'] = data['loanAmnt'] / data['term']
+    data['mean_interestRate'] = data['interestRate'] / data['term']
+    data['all_installment'] = data['installment'] * data['term']
+
+    data['rest_money_rate'] = data['avg_loanAmnt'] / (data['annualIncome'] + 0.1)  # 287个收入为0
+    data['rest_money'] = data['annualIncome'] - data['avg_loanAmnt']
+
+    data['closeAcc'] = data['totalAcc'] - data['openAcc']
+    data['ficoRange_mean'] = (data['ficoRangeHigh'] + data['ficoRangeLow']) / 2
+    del data['ficoRangeHigh'], data['ficoRangeLow']
+
+    data['rest_pubRec'] = data['pubRec'] - data['pubRecBankruptcies']
+
+    data['rest_Revol'] = data['loanAmnt'] - data['revolBal']
+
+    data['dis_time'] = data['issueDate_year'] - (2020 - data['earliesCreditLine_year'])
+    for col in ['employmentTitle', 'grade', 'subGrade', 'regionCode', 'issueDate_month', 'postCode']:
+        data['{}_count'.format(col)] = data.groupby([col])['id'].transform('count')
+
+    return data
+
+
+def plotroc(train_y, train_pred, test_y, val_pred):
+    lw = 2
+    ##train
+    fpr, tpr, thresholds = roc_curve(train_y.values, train_pred, pos_label=1.0)
+    train_auc_value = roc_auc_score(train_y.values, train_pred)
+    ##valid
+    fpr, tpr, thresholds = roc_curve(test_y.values, val_pred, pos_label=1.0)
+    valid_auc_value = roc_auc_score(test_y.values, val_pred)
+
+    return train_auc_value, valid_auc_value
