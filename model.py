@@ -41,7 +41,6 @@ def load_dataset(DATA_PATH):
     train_label = pd.read_csv(DATA_PATH + 'train.csv')['isDefault']
     train = pd.read_csv(DATA_PATH + 'train.csv')
     test = pd.read_csv(DATA_PATH + 'testA.csv')
-    del train['n2.1']
     feats = [f for f in train.columns if f not in ['n_2.1', 'n2.2', 'n2.3', 'isDefault']]
     # train = train[feats]
     test = test[feats]
@@ -316,12 +315,12 @@ def data_preprocess(DATA_PATH):
     print('n特征处理后：', data.shape)
 
     # count编码，以count计数作为值
-    count_list = ['subGrade', 'grade', 'postCode', 'regionCode', 'homeOwners', 'title','employmentTitle','employmentLength']
+    count_list = ['subGrade', 'grade', 'postCode', 'regionCode', 'homeOwnership', 'title','employmentTitle','employmentLength']
     data = count_coding(data, count_list)
     print('count编码后：', data.shape)
 
     # 选取和price相关性强的分类和数值特征进行一阶二阶交叉
-    cross_cat = ['subGrade', 'grade', 'employmentLength', 'term', 'homeOwner', 'postCode', 'regionCode','employmentTitle','title']
+    cross_cat = ['subGrade', 'grade', 'employmentLength', 'term', 'homeOwnership', 'postCode', 'regionCode','employmentTitle','title']
     cross_num = ['dti', 'revolBal','revolUtil', 'ficoRangeHigh', 'interestRate', 'loanAmnt', 'installment', 'annualIncome', 'n14',
                  'n2', 'n6', 'n9', 'n5', 'n8']
     data = cross_cat_num(data, cross_num, cross_cat)  # 一阶交叉
@@ -452,7 +451,7 @@ def plotroc(train_y, train_pred, test_y, val_pred):
 
 if __name__ == '__main__':
     print('Start time:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
-    DATA_PATH = '../data/'
+    DATA_PATH = './data/'
     print('读取数据...')
     data, train_label = data_preprocess(DATA_PATH=DATA_PATH)
 
