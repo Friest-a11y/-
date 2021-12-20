@@ -1,15 +1,7 @@
+# 包对应版本
 # !pip install pandas==0.24.2 --user
 # !pip install lightgbm==2.3.1 --user
 # !pip install xgboost==1.1.1 --user
-
-# !cd ./model
-import  os
-
-print(os.getcwd())#获取当前工作目录路径
-print(os.path.abspath('.')) #获取当前工作目录路径
-# print os.path.abspath('test.txt') #获取当前目录文件下的工作目录路径
-print(os.path.abspath('..')) #获取当前工作的父目录 ！注意是父目录路径
-print(os.path.abspath(os.curdir))#获取当前工作目录路径
 
 # coding: utf-8
 import multiprocessing
@@ -39,9 +31,6 @@ import datetime
 import time
 from itertools import product
 
-nowtime = datetime.date.today()
-nowtime = str(nowtime)[-5:]
-print(nowtime)
 warnings.filterwarnings('ignore')
 
 ################################################1
@@ -362,3 +351,103 @@ def plotroc(train_y, train_pred, test_y, val_pred):
     valid_auc_value = roc_auc_score(test_y.values, val_pred)
 
     return train_auc_value, valid_auc_value
+
+
+if __name__ == '__main__':
+    print('Start time:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
+    DATA_PATH = '../data/'
+    print('读取数据...')
+    data, train_label = data_preprocess(DATA_PATH=DATA_PATH)
+
+    print('开始特征工程...')
+    data = gen_basicFea(data)
+
+    print('data.shape', data.shape)
+    print('开始模型训练...')
+    train = data[~data['isDefault'].isnull()].copy()
+    target = train_label
+    test = data[data['isDefault'].isnull()].copy()
+
+    target_encode_cols = ['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title']
+
+    kflod_num = 5
+    ss = 0.8
+    fs = 0.4
+
+    class_list = ['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title']
+    MeanEnocodeFeature = class_list  # 声明需要平均数编码的特征
+    ME = MeanEncoder(MeanEnocodeFeature, target_type='classification')  # 声明平均数编码的类
+    train = ME.fit_transform(train, target)  # 对训练数据集的X和y进行拟合
+    # x_train_fav = ME.fit_transform(x_train,y_train_fav)#对训练数据集的X和y进行拟合
+    test = ME.transform(test)  # 对测试集进行编码
+    print('num0:mean_encode train.shape', train.shape, test.shape)
+
+    train, test = kfold_stats_feature(train, test, target_encode_cols, kflod_num)
+    print('num1:target_encode train.shape', train.shape, test.shape)
+    ### target encoding目标编码，回归场景相对来说做目标编码的选择更多，不仅可以做均值编码，还可以做标准差编码、中位数编码等
+    enc_cols = []
+    stats_default_dict = {
+        'max': train['isDefault'].max(),
+        'min': train['isDefault'].min(),
+        'median': train['isDefault'].median(),
+        'mean': train['isDefault'].mean(),
+        'sum': train['isDefault'].sum(),
+        'std': train['isDefault'].std(),
+        'skew': train['isDefault'].skew(),
+        'kurt': train['isDefault'].kurt(),
+        'mad': train['isDefault'].mad()
+    }
+    ### 暂且选择这三种编码
+    enc_stats = ['max', 'min', 'skew', 'std']
+    skf = KFold(n_splits=kflod_num, shuffle=True, random_state=6666)
+    for f in tqdm(['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title']):
+        enc_dict = {}
+        for stat in enc_stats:
+            enc_dict['{}_target_{}'.format(f, stat)] = stat
+            train['{}_target_{}'.format(f, stat)] = 0
+            test['{}_target_{}'.format(f, stat)] = 0
+            enc_cols.append('{}_target_{}'.format(f, stat))
+        for i, (trn_idx, val_idx) in enumerate(skf.split(train, target)):
+            trn_x, val_x = train.iloc[trn_idx].reset_index(drop=True), train.iloc[val_idx].reset_index(drop=True)
+            enc_df = trn_x.groupby(f, as_index=False)['isDefault'].agg(enc_dict)
+            val_x = val_x[[f]].merge(enc_df, on=f, how='left')
+            test_x = test[[f]].merge(enc_df, on=f, how='left')
+            for stat in enc_stats:
+                val_x['{}_target_{}'.format(f, stat)] = val_x['{}_target_{}'.format(f, stat)].fillna(
+                    stats_default_dict[stat])
+                test_x['{}_target_{}'.format(f, stat)] = test_x['{}_target_{}'.format(f, stat)].fillna(
+                    stats_default_dict[stat])
+                train.loc[val_idx, '{}_target_{}'.format(f, stat)] = val_x['{}_target_{}'.format(f, stat)].values
+                test['{}_target_{}'.format(f, stat)] += test_x['{}_target_{}'.format(f, stat)].values / skf.n_splits
+
+    print('num2:target_encode train.shape', train.shape, test.shape)
+
+    train.drop(['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title'], axis=1, inplace=True)
+    test.drop(['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title'], axis=1, inplace=True)
+    print('输入数据维度：', train.shape, test.shape)
+
+    xgb_preds, xgb_oof, xgb_score, feaNum = xgb_model(train=train, target=target, test=test, k=kflod_num)
+
+    lgb_score = round(xgb_score, 5)
+    sub_df = test[['id']].copy()
+    sub_df['isDefault'] = xgb_preds
+    off = test[['id']].copy()
+    subVal_df = train[['id']].copy()
+    subVal_df['isDefault'] = xgb_oof
+    outpath = '../user_data/'
+
+    all_auc_score = roc_auc_score(train_label, subVal_df['isDefault'])
+    print('整体指标得分：', all_auc_score)
+    all_auc_score = round(all_auc_score, 5)
+
+    sub_df.to_csv(outpath + 'xgb1.csv', index=False)
+    subVal_df.to_csv(outpath + 'xgb1Val.csv', index=False)
+    print('End time:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
+    # sub_df.to_csv(
+    #     outpath + str(all_auc_score) + '_' + str(feaNum) + '_' + nowtime + '_{}_{}_{}_xgb.csv'.format(ss, fs,
+    #                                                                                                   kflod_num),
+    #     index=False)
+    # subVal_df.to_csv(
+    #     outpath + str(all_auc_score) + '_' + str(feaNum) + '_' + nowtime + '_{}_{}_{}_subVal.csv'.format(ss, fs,
+    #                                                                                                      kflod_num),
+    #     index=False)
