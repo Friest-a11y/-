@@ -38,15 +38,19 @@ warnings.filterwarnings('ignore')
 # ==========
 # 载入数据集
 def load_dataset(DATA_PATH):
-    train_label = pd.read_csv(DATA_PATH + 'train.csv')['isDefault']
     train = pd.read_csv(DATA_PATH + 'train.csv')
     test = pd.read_csv(DATA_PATH + 'testA.csv')
-    del train['n2.1']
-    feats = [f for f in train.columns if f not in ['n_2.1', 'n2.2', 'n2.3', 'isDefault']]
+
+    train_label = train['isDefault']
+
+    feats = [f for f in train.columns if f not in ['isDefault']]
     # train = train[feats]
     test = test[feats]
     print('train.shape', train.shape)
     print('test.shape', test.shape)
+
+    reduce_mem_usage(train)
+    reduce_mem_usage(test)
 
     return train_label, train, test
 
@@ -181,7 +185,7 @@ class MeanEncoder:
             X_train['pred_temp'] = y_train  # regression
         prior = X_train['pred_temp'].mean()
 
-        col_avg_y = X_train.groupby(by=variable, axis=0)['pred_temp'].agg({'mean': 'mean', 'beta': 'size'})
+        col_avg_y = X_train.groupby(by=variable, axis=0)['pred_temp'].agg([('mean', 'mean'), ('beta', 'size')])
         col_avg_y['beta'] = prior_weight_func(col_avg_y['beta'])
         col_avg_y[nf_name] = col_avg_y['beta'] * prior + (1 - col_avg_y['beta']) * col_avg_y['mean']
         col_avg_y.drop(['beta', 'mean'], axis=1, inplace=True)
@@ -261,6 +265,42 @@ class MeanEncoder:
 # ==========
 # Fzq's part
 # ==========
+def reduce_mem_usage(df):
+    """ iterate through all the columns of a dataframe and modify the data type
+        to reduce memory usage.
+    """
+    start_mem = df.memory_usage().sum()
+    print('内存占用{:.2f} MB'.format(start_mem))
+
+    for col in df.columns:
+        col_type = df[col].dtype
+
+        if col_type != object:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == 'int':
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)
+
+    end_mem = df.memory_usage().sum()
+    print('优化后内存为: {:.2f} MB'.format(end_mem))
+    print('内存使用减少 {:.1f}%'.format(100 * (start_mem - end_mem) / start_mem))
+    return df
+
+
 def employmentLength_trans(x):
     if x == r'\N' or x == -999 or x == '-999':
         return -999
@@ -316,12 +356,12 @@ def data_preprocess(DATA_PATH):
     print('n特征处理后：', data.shape)
 
     # count编码，以count计数作为值
-    count_list = ['subGrade', 'grade', 'postCode', 'regionCode', 'homeOwners', 'title','employmentTitle','employmentLength']
+    count_list = ['subGrade', 'grade', 'postCode', 'regionCode', 'homeOwnership', 'title','employmentTitle','employmentLength']
     data = count_coding(data, count_list)
     print('count编码后：', data.shape)
 
     # 选取和price相关性强的分类和数值特征进行一阶二阶交叉
-    cross_cat = ['subGrade', 'grade', 'employmentLength', 'term', 'homeOwner', 'postCode', 'regionCode','employmentTitle','title']
+    cross_cat = ['subGrade', 'grade', 'employmentLength', 'term', 'homeOwnership', 'postCode', 'regionCode','employmentTitle','title']
     cross_num = ['dti', 'revolBal','revolUtil', 'ficoRangeHigh', 'interestRate', 'loanAmnt', 'installment', 'annualIncome', 'n14',
                  'n2', 'n6', 'n9', 'n5', 'n8']
     data = cross_cat_num(data, cross_num, cross_cat)  # 一阶交叉
@@ -374,12 +414,11 @@ def count_coding(df, fea_col):
 # 定义交叉特征统计
 def cross_cat_num(df, num_col, cat_col):
     for f1 in tqdm(cat_col):
-        g = df.groupby(f1, as_index=False)
         for f2 in tqdm(num_col):
-            feat = g[f2].agg({
-                '{}_{}_max'.format(f1, f2): 'max', '{}_{}_min'.format(f1, f2): 'min',
-                '{}_{}_median'.format(f1, f2): 'median',
-            })
+            feat = df.groupby(f1, as_index=False)[f2].agg([
+                ('{}_{}_max'.format(f1, f2), 'max'), ('{}_{}_min'.format(f1, f2), 'min'),
+                ('{}_{}_median'.format(f1, f2), 'median'),
+            ])
             df = df.merge(feat, on=f1, how='left')
     return (df)
 
@@ -393,13 +432,13 @@ def cross_qua_cat_num(df):
         # 共现次数
         df['_'.join(f_pair) + '_count'] = df.groupby(f_pair)['id'].transform('count')
         # n unique、熵
-        df = df.merge(df.groupby(f_pair[0], as_index=False)[f_pair[1]].agg({
-            '{}_{}_nunique'.format(f_pair[0], f_pair[1]): 'nunique',
-            '{}_{}_ent'.format(f_pair[0], f_pair[1]): lambda x: entropy(x.value_counts() / x.shape[0])
-        }), on=f_pair[0], how='left')
+        df = df.merge(df.groupby(f_pair[0], as_index=False)[f_pair[1]].agg([
+            ('{}_{}_nunique'.format(f_pair[0], f_pair[1]), 'nunique'),
+            ('{}_{}_ent'.format(f_pair[0], f_pair[1]), lambda x: entropy(x.value_counts() / x.shape[0]))
+        ]), on=f_pair[0], how='left')
         df = df.merge(df.groupby(f_pair[1], as_index=False)[f_pair[0]].agg({
-            '{}_{}_nunique'.format(f_pair[1], f_pair[0]): 'nunique',
-            '{}_{}_ent'.format(f_pair[1], f_pair[0]): lambda x: entropy(x.value_counts() / x.shape[0])
+            ('{}_{}_nunique'.format(f_pair[1], f_pair[0]), 'nunique'),
+            ('{}_{}_ent'.format(f_pair[1], f_pair[0]), lambda x: entropy(x.value_counts() / x.shape[0]))
         }), on=f_pair[1], how='left')
         # 比例偏好
         df['{}_in_{}_prop'.format(f_pair[0], f_pair[1])] = df['_'.join(f_pair) + '_count'] / df[f_pair[1] + '_count']
@@ -452,7 +491,7 @@ def plotroc(train_y, train_pred, test_y, val_pred):
 
 if __name__ == '__main__':
     print('Start time:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
-    DATA_PATH = '../data/'
+    DATA_PATH = './data/'
     print('读取数据...')
     data, train_label = data_preprocess(DATA_PATH=DATA_PATH)
 
@@ -498,15 +537,15 @@ if __name__ == '__main__':
     enc_stats = ['max', 'min', 'skew', 'std']
     skf = KFold(n_splits=kflod_num, shuffle=True, random_state=6666)
     for f in tqdm(['postCode', 'regionCode', 'homeOwnership', 'employmentTitle', 'title']):
-        enc_dict = {}
+        enc_list = []
         for stat in enc_stats:
-            enc_dict['{}_target_{}'.format(f, stat)] = stat
+            enc_list.append(('{}_target_{}'.format(f, stat), stat))
             train['{}_target_{}'.format(f, stat)] = 0
             test['{}_target_{}'.format(f, stat)] = 0
             enc_cols.append('{}_target_{}'.format(f, stat))
         for i, (trn_idx, val_idx) in enumerate(skf.split(train, target)):
             trn_x, val_x = train.iloc[trn_idx].reset_index(drop=True), train.iloc[val_idx].reset_index(drop=True)
-            enc_df = trn_x.groupby(f, as_index=False)['isDefault'].agg(enc_dict)
+            enc_df = trn_x.groupby(f, as_index=False)['isDefault'].agg(enc_list)
             val_x = val_x[[f]].merge(enc_df, on=f, how='left')
             test_x = test[[f]].merge(enc_df, on=f, how='left')
             for stat in enc_stats:
