@@ -33,6 +33,103 @@ from itertools import product
 
 warnings.filterwarnings('ignore')
 
+# ==========
+# Yy's part
+# ==========
+# 载入数据集
+def load_dataset(DATA_PATH):
+    train_label = pd.read_csv(DATA_PATH + 'train.csv')['isDefault']
+    train = pd.read_csv(DATA_PATH + 'train.csv')
+    test = pd.read_csv(DATA_PATH + 'testA.csv')
+    del train['n2.1']
+    feats = [f for f in train.columns if f not in ['n_2.1', 'n2.2', 'n2.3', 'isDefault']]
+    # train = train[feats]
+    test = test[feats]
+    print('train.shape', train.shape)
+    print('test.shape', test.shape)
+
+    return train_label, train, test
+
+# 将时间统一换算成秒
+def transform_time(x):
+    day = int(x.split(' ')[0])
+    hour = int(x.split(' ')[2].split('.')[0].split(':')[0])
+    minute = int(x.split(' ')[2].split('.')[0].split(':')[1])
+    second = int(x.split(' ')[2].split('.')[0].split(':')[2])
+    return 86400 * day + 3600 * hour + 60 * minute + second
+
+# 将时间变为与截止日期相差的时间
+def transform_day(date_begin):
+    #设置数据获取的时间
+    date_end = "2020-01-01"
+    
+    #标准化时间的格式
+    date_begin = time.strptime(date_begin, "%Y-%m-%d")
+    date_end = time.strptime(date_end, "%Y-%m-%d")
+
+    # 获取时间中的年月日
+    # date[0]：年；date[1]：月；date[2]：日；
+    date_begin = datetime.datetime(date_begin[0], date_begin[1], date_begin[2])
+    date_end = datetime.datetime(date_end[0], date_end[1], date_end[2])
+    
+    # 计算相差天数
+    return (date_end - date_begin).days
+
+# 标准化标签
+def labelEncoder_df(df, features):
+    for i in features:
+        encoder = preprocessing.LabelEncoder()
+        df[i] = encoder.fit_transform(df[i])
+
+# 获取K折交叉验证的训练集和测试集，将每个折中的无序特征缺失项由其他折的平均值填充
+def kfold_stats_feature(train, test, feats, k):
+    #设置分类参数
+    folds = StratifiedKFold(n_splits=k, shuffle=True, random_state=6666)
+
+    train['fold'] = None
+    for fold_, (trn_idx, val_idx) in enumerate(folds.split(train, train['isDefault'])):
+        train.loc[val_idx, 'fold'] = fold_#增加标签，代表所在折
+
+    kfold_features = []
+    for feat in feats:
+        nums_columns = ['isDefault']
+        
+        for f in nums_columns:
+            colname = feat + '_' + f + '_kfold_mean'
+            kfold_features.append(colname)
+            train[colname] = None
+            for fold_, (trn_idx, val_idx) in enumerate(folds.split(train, train['isDefault'])):
+                tmp_trn = train.iloc[trn_idx]
+                order_label = tmp_trn.groupby([feat])[f].mean()
+                tmp = train.loc[train.fold == fold_, [feat]]
+                train.loc[train.fold == fold_, colname] = tmp[feat].map(order_label)
+                # fillna
+                global_mean = train[f].mean()
+                train.loc[train.fold == fold_, colname] = train.loc[train.fold == fold_, colname].fillna(global_mean)
+            train[colname] = train[colname].astype(float)
+
+        for f in nums_columns:
+            colname = feat + '_' + f + '_kfold_mean'
+            test[colname] = None
+            order_label = train.groupby([feat])[f].mean()
+            test[colname] = test[feat].map(order_label)
+            # fillna
+            global_mean = train[f].mean()
+            test[colname] = test[colname].fillna(global_mean)
+            test[colname] = test[colname].astype(float)
+            
+    del train['fold']
+    return train, test
+
+# 网格搜索最优参数
+def GridSearch(clf, params, X, y):
+    cscv = GridSearchCV(clf, params, scoring='roc_auc', n_jobs=4, cv=10)
+    cscv.fit(X, y)
+    print("最佳结果：",cscv.cv_results_)
+    print("最佳参数：",cscv.best_params_)
+    print("最佳roc_auc：",cscv.best_score_)
+
+
 ################################################1
 #均值编码的实现，为了缓解 target encoding的偏差问题，出现了后来的mean encoding以及加入噪声的target encoding，mean encoding引入了类似于集成的思想，在不同的原始数据的抽样子集下计算target encoding值，然后平均。
 #数学基础较为复杂，不做展开
